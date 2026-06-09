@@ -130,7 +130,6 @@ CLAUDE_AVAILABLE_MODELS = [
 
 CODEX_MODEL_MAP = {
     "codex/default": CODEX_DEFAULT_MODEL,
-    "codex/gpt-5.5": "gpt-5.5",
 }
 CLAUDE_SUPPORTED_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
 CODEX_SUPPORTED_EFFORTS = ["low", "medium", "high", "xhigh"]
@@ -141,18 +140,19 @@ _DEFAULT_CODEX_STATIC_MODEL_IDS = [
     "gpt-5.3-codex",
     "gpt-5.3-codex-spark",
     "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.1",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5",
+    "gpt-5-codex",
+    "gpt-5-codex-mini",
 ]
 CODEX_STATIC_MODEL_IDS = [
     m.strip()
     for m in os.environ.get("CODEX_STATIC_MODELS", ",".join(_DEFAULT_CODEX_STATIC_MODEL_IDS)).split(",")
     if m.strip()
 ]
-
-CODEX_AVAILABLE_MODELS = [
-    {"id": "codex/default", "object": "model", "created": 1700000000, "owned_by": "openai"},
-    {"id": "codex/gpt-5.5", "object": "model", "created": 1700000000, "owned_by": "openai"},
-]
-
 
 def _static_codex_models():
     out = []
@@ -216,7 +216,12 @@ def _resolve_codex_model(model_name, codex_config_dir):
     by_slug = {m["slug"]: m for m in _load_codex_models(codex_config_dir)}
     meta = by_slug.get(slug)
     if not meta:
-        raise ValueError(f"unsupported Codex model: {name}")
+        meta = {
+            "slug": slug,
+            "supported_efforts": [],
+            "default_effort": None,
+            "pass_through": True,
+        }
     return slug, meta
 
 
@@ -405,7 +410,7 @@ def _resolve_provider_and_model(body):
             }
         return provider, CLAUDE_MODEL_MAP.get(model_name, model_name), None
 
-    if model_name in CLAUDE_MODEL_MAP and not model_is_codex:
+    if (model_name in CLAUDE_MODEL_MAP or model_name.startswith("claude-")) and not model_is_codex:
         return None, None, {
             "message": "Claude model aliases require provider=claude",
             "type": "invalid_request_error",
@@ -1822,7 +1827,8 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         reasoning_effort = _normalize_reasoning_effort(body.get("reasoning_effort"))
-        if reasoning_effort and reasoning_effort not in (model_meta.get("supported_efforts") or []):
+        supported_efforts = model_meta.get("supported_efforts") or []
+        if reasoning_effort and supported_efforts and reasoning_effort not in supported_efforts:
             self._json_response(400, {
                 "error": {
                     "message": f"unsupported reasoning_effort for model {model}: {reasoning_effort}",

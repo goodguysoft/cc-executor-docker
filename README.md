@@ -182,12 +182,30 @@ appended.
 | Model ID | CLI Model | Notes |
 |----------|-----------|-------|
 | `codex/default` | `CODEX_DEFAULT_MODEL` | Defaults to `gpt-5.5` |
-| `codex/gpt-5.5` | `gpt-5.5` | Available explicit model |
+| `codex/gpt-5.5` | `gpt-5.5` | Current frontier Codex model |
+| `codex/gpt-5.4` | `gpt-5.4` | Current Codex model |
+| `codex/gpt-5.4-mini` | `gpt-5.4-mini` | Current mini Codex model |
+| `codex/gpt-5.3-codex` | `gpt-5.3-codex` | Codex-optimized model; code review uses GPT-5.3-Codex |
+| `codex/gpt-5.3-codex-spark` | `gpt-5.3-codex-spark` | Research preview where available |
+| `codex/gpt-5.2` | `gpt-5.2` | Legacy/current fallback where available |
+| `codex/gpt-5.2-codex` | `gpt-5.2-codex` | Legacy Codex model where available |
+| `codex/gpt-5.1` | `gpt-5.1` | Legacy model where available |
+| `codex/gpt-5.1-codex-max` | `gpt-5.1-codex-max` | Legacy Codex model where available |
+| `codex/gpt-5.1-codex-mini` | `gpt-5.1-codex-mini` | Legacy Codex mini model where available |
+| `codex/gpt-5` | `gpt-5` | Legacy model where available |
+| `codex/gpt-5-codex` | `gpt-5-codex` | Legacy Codex model where available |
+| `codex/gpt-5-codex-mini` | `gpt-5-codex-mini` | Legacy Codex mini model where available |
 
-With `provider: "codex"`, only the mapped Codex model ids above and their
-resolved CLI model value, `gpt-5.5`, are accepted. Claude aliases such as
-`sonnet` are rejected when `provider` is `codex`, and `codex/*` models are
-rejected when `provider` is `claude`.
+`/v1/models` uses the authenticated Codex `models_cache.json` when available;
+otherwise it returns the static list above. With `provider: "codex"`, any
+`codex/<model>` id is passed through to the Codex CLI as `<model>`, and any
+bare non-Claude model id is passed through as-is. This keeps cc-executor from
+blocking newly available Codex models before this proxy is updated. If a model
+is not available to the signed-in Codex account, the Codex CLI returns the
+provider error. Claude aliases such as `sonnet` are still rejected when
+`provider` is `codex`, Claude full model ids such as `claude-*` are rejected
+when `provider` is `codex`, and `codex/*` models are rejected when `provider`
+is `claude`.
 
 ## Environment Variables
 
