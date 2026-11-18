@@ -111,23 +111,6 @@ CLAUDE_MODEL_MAP = {
     "cc-executor/sonnet200k": "sonnet",
 }
 
-CLAUDE_AVAILABLE_MODELS = [
-    {"id": "opus[1m]", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "sonnet[1m]", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "opus", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "sonnet", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "haiku", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "opus200k", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "sonnet200k", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/opus[1m]", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/sonnet[1m]", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/opus", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/sonnet", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/haiku", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/opus200k", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-    {"id": "cc-executor/sonnet200k", "object": "model", "created": 1700000000, "owned_by": "anthropic"},
-]
-
 CODEX_MODEL_MAP = {
     "codex/default": CODEX_DEFAULT_MODEL,
 }
@@ -165,18 +148,19 @@ def _static_codex_models():
     return out
 
 
-def _load_codex_models(codex_config_dir):
+def _load_codex_models(codex_config_dir, *, allow_static_fallback=True):
+    fallback = _static_codex_models() if allow_static_fallback else []
     config_dir = _valid_codex_config_dir(codex_config_dir)
     if not config_dir:
-        return _static_codex_models()
+        return fallback
     path = Path(config_dir) / "models_cache.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return _static_codex_models()
+        return fallback
     rows = data.get("models") if isinstance(data, dict) else None
     if not isinstance(rows, list):
-        return _static_codex_models()
+        return fallback
     out = []
     for row in rows:
         if not isinstance(row, dict) or row.get("visibility") != "list":
@@ -202,7 +186,7 @@ def _load_codex_models(codex_config_dir):
             "supported_efforts": efforts,
             "default_effort": default_effort,
         })
-    return out or _static_codex_models()
+    return out
 
 
 def _resolve_codex_model(model_name, codex_config_dir):
@@ -225,10 +209,10 @@ def _resolve_codex_model(model_name, codex_config_dir):
     return slug, meta
 
 
-def _codex_model_entries(codex_config_dir=None, force_static=False):
+def _codex_model_entries(codex_config_dir):
     entries = []
     seen = set()
-    models = _static_codex_models() if force_static else _load_codex_models(codex_config_dir)
+    models = _load_codex_models(codex_config_dir, allow_static_fallback=False)
 
     def add(entry):
         if entry["id"] in seen:
@@ -250,11 +234,7 @@ def _codex_model_entries(codex_config_dir=None, force_static=False):
     for alias_id, slug in CODEX_MODEL_MAP.items():
         meta = next((m for m in models if m["slug"] == slug), None)
         if meta is None:
-            meta = {
-                "slug": slug,
-                "supported_efforts": list(CODEX_SUPPORTED_EFFORTS),
-                "default_effort": "medium",
-            }
+            continue
         add({
             "id": alias_id,
             "object": "model",
@@ -1089,26 +1069,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 self._json_response(401, {"error": {"message": "Invalid API key", "type": "authentication_error"}})
                 return
-            requested_codex_dir = self.headers.get("X-Codex-Config-Dir", "")
-            if requested_codex_dir:
-                codex_config_dir = _valid_codex_config_dir(requested_codex_dir)
-                if not codex_config_dir:
-                    self._json_response(400, {"error": {"message": "invalid CODEX_HOME"}})
-                    return
-                codex_models = _codex_model_entries(codex_config_dir)
-            else:
-                codex_models = _codex_model_entries(force_static=True)
-            claude_models = [
-                {
-                    **m,
-                    "supported_efforts": list(CLAUDE_SUPPORTED_EFFORTS),
-                    "default_effort": None,
-                }
-                for m in CLAUDE_AVAILABLE_MODELS
-            ]
+            codex_config_dir = self._codex_config_dir_from_request()
+            if not codex_config_dir:
+                return
             self._json_response(200, {
                 "object": "list",
-                "data": claude_models + codex_models,
+                "data": _codex_model_entries(codex_config_dir),
             })
         elif self.path == "/admin/status":
             if not self._check_auth():
