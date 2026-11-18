@@ -1782,12 +1782,19 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Expected a JSON object")
             unsupported = body.keys() - {
                 "model", "input", "instructions", "reasoning", "stream",
-                "store", "tools", "previous_response_id",
+                "store", "tools", "previous_response_id", "text",
             }
             if unsupported:
                 raise ValueError(f"Unsupported fields: {', '.join(sorted(unsupported))}")
             if body.get("store", False) is not False or body.get("previous_response_id") is not None:
                 raise ValueError("Only stateless responses are supported")
+            text_options = body.get("text", {})
+            if (
+                not isinstance(text_options, dict)
+                or text_options.keys() - {"format"}
+                or text_options.get("format", {"type": "text"}) != {"type": "text"}
+            ):
+                raise ValueError('Only text.format.type="text" is supported')
             if body.get("tools", []) != []:
                 raise ValueError("Responses API tools are unsupported")
             if not isinstance(body.get("stream", False), bool):
