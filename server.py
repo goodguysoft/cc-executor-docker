@@ -2,6 +2,7 @@
 """cc-executor — Claude Code and Codex CLI HTTP proxy (OpenAI-compatible API).
 
 POST /v1/chat/completions  — OpenAI-compatible chat completions
+POST /v1/responses         — Stateless Codex text responses
 GET  /v1/models            — Available models
 GET  /health               — Health check
 
@@ -1125,6 +1126,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/v1/chat/completions":
             self._handle_chat_completions()
+        elif self.path == "/v1/responses":
+            self._handle_responses()
         elif self.path == "/admin/credentials":
             self._handle_set_credentials()
         elif self.path == "/admin/oauth/start":
@@ -1768,8 +1771,131 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"[WARN] failed to clean request dir {request_dir}: {exc}",
                           file=sys.stderr)
 
+    def _handle_responses(self):
+        if not self._check_auth():
+            self._json_response(401, {"error": {"message": "Invalid API key", "type": "authentication_error"}})
+            return
+
+        body = self._read_json()
+        try:
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object")
+            unsupported = body.keys() - {
+                "model", "input", "instructions", "reasoning", "stream",
+                "store", "tools", "previous_response_id",
+            }
+            if unsupported:
+                raise ValueError(f"Unsupported fields: {', '.join(sorted(unsupported))}")
+            if body.get("store", False) is not False or body.get("previous_response_id") is not None:
+                raise ValueError("Only stateless responses are supported")
+            if body.get("tools", []) != []:
+                raise ValueError("Responses API tools are unsupported")
+            if not isinstance(body.get("stream", False), bool):
+                raise ValueError("stream must be a boolean")
+            model = body.get("model")
+            if not isinstance(model, str) or not model.startswith("codex/") or len(model) == len("codex/"):
+                raise ValueError("model must be a codex/ model ID")
+            instructions = body.get("instructions")
+            if instructions is not None and not isinstance(instructions, str):
+                raise ValueError("instructions must be a string")
+            reasoning = body.get("reasoning")
+            if reasoning is not None and (
+                not isinstance(reasoning, dict)
+                or reasoning.keys() - {"effort"}
+                or not isinstance(reasoning.get("effort"), str)
+                or reasoning["effort"] not in CODEX_SUPPORTED_EFFORTS
+            ):
+                raise ValueError("Only supported reasoning.effort values are accepted")
+
+            prompt = self._responses_prompt(body.get("input"))
+        except ValueError as exc:
+            self._json_response(400, {"error": {"message": str(exc), "type": "invalid_request_error"}})
+            return
+
+        self._handle_codex_chat(
+            body={"reasoning_effort": reasoning["effort"]} if reasoning else {},
+            model=model, cli_model=None, prompt=prompt, system_prompt=instructions,
+            output_files_mode=False, request_timeout=None, body_cwd=None,
+            body_add_dirs=None, responses_api=True, stream=body.get("stream", False),
+        )
+
+    @staticmethod
+    def _responses_prompt(value):
+        if isinstance(value, str) and value.strip():
+            return value
+        if not isinstance(value, list) or not value:
+            raise ValueError("input must be non-empty text or a list of text messages")
+
+        messages = []
+        for item in value:
+            if not isinstance(item, dict) or item.get("type", "message") != "message":
+                raise ValueError("Only text message inputs are supported")
+            role = item.get("role")
+            if role not in ("system", "developer", "user", "assistant"):
+                raise ValueError("Invalid input message role")
+            content = item.get("content")
+            if isinstance(content, list):
+                expected_type = "output_text" if role == "assistant" else "input_text"
+                if any(
+                    not isinstance(part, dict) or part.get("type") != expected_type
+                    or not isinstance(part.get("text"), str)
+                    for part in content
+                ):
+                    raise ValueError("Only text message content is supported")
+                content = "\n".join(part["text"] for part in content)
+            if not isinstance(content, str):
+                raise ValueError("Message content must be text")
+            messages.append(f"{role}: {content}")
+        return "\n\n".join(messages)
+
+    def _send_codex_response(self, model, output, stream):
+        part = {"type": "output_text", "text": output, "annotations": []}
+        item = {
+            "id": f"msg_{uuid.uuid4().hex}", "type": "message",
+            "role": "assistant", "status": "completed", "content": [part],
+        }
+        response = {
+            "id": f"resp_{uuid.uuid4().hex}", "object": "response",
+            "created_at": int(time.time()), "status": "completed",
+            "model": model, "output": [item], "error": None,
+            "incomplete_details": None, "usage": None,
+        }
+        if not stream:
+            self._json_response(200, response)
+            return
+
+        pending = dict(response, status="in_progress", output=[])
+        location = {"item_id": item["id"], "output_index": 0, "content_index": 0}
+        empty_part = dict(part, text="")
+        events = [
+            ("response.created", {"response": pending}),
+            ("response.in_progress", {"response": pending}),
+            ("response.output_item.added", {
+                "output_index": 0, "item": dict(item, status="in_progress", content=[]),
+            }),
+            ("response.content_part.added", {**location, "part": empty_part}),
+            ("response.output_text.delta", {**location, "delta": output, "logprobs": []}),
+            ("response.output_text.done", {**location, "text": output, "logprobs": []}),
+            ("response.content_part.done", {**location, "part": part}),
+            ("response.output_item.done", {"output_index": 0, "item": item}),
+            ("response.completed", {"response": response}),
+        ]
+        # codex exec returns the final text as one result.
+        frames = []
+        for sequence, (event, data) in enumerate(events):
+            payload = json.dumps({"type": event, "sequence_number": sequence, **data}, ensure_ascii=False)
+            frames.append(f"event: {event}\ndata: {payload}\n\n")
+        encoded = "".join(frames).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def _handle_codex_chat(self, body, model, cli_model, prompt, system_prompt,
-                           output_files_mode, request_timeout, body_cwd, body_add_dirs, web_search=False):
+                           output_files_mode, request_timeout, body_cwd, body_add_dirs, web_search=False,
+                           *, responses_api=False, stream=False):
         config_dir = self._codex_config_dir_from_request(body)
         if not config_dir:
             return
@@ -1869,6 +1995,10 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if responses_api:
+                self._send_codex_response(model, output, stream)
+                return
+
             files_payload = _collect_files(request_dir) if output_files_mode else None
 
             response = {
@@ -1920,6 +2050,7 @@ def main():
     reaper.start()
     print(f"cc-executor listening on {HOST}:{PORT} (threaded)", file=sys.stderr)
     print(f"  POST /v1/chat/completions", file=sys.stderr)
+    print("  POST /v1/responses", file=sys.stderr)
     print(f"  GET  /v1/models", file=sys.stderr)
     print(f"  GET  /health", file=sys.stderr)
     try:
