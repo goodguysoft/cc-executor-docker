@@ -7,6 +7,7 @@ services:
       - "${CC_PORT:-9100}:9100"
     environment:
       - CC_API_KEY=${CC_API_KEY}
+      - CC_CODEX_LOCAL_SKILLS=${CC_CODEX_LOCAL_SKILLS:-false}
       - CC_TIMEOUT=${CC_TIMEOUT:-300}
       - CODEX_API_KEY=${CODEX_API_KEY:-}
       - CC_CODEX_ALLOW_DANGER_FULL_ACCESS=${CC_CODEX_ALLOW_DANGER_FULL_ACCESS:-false}

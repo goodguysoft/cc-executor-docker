@@ -52,6 +52,9 @@ USER_CLAUDE_CONFIG_ROOT = "/root/.claude/users"
 DEFAULT_CODEX_CONFIG_DIR = "/root/.codex"
 USER_CODEX_CONFIG_ROOT = "/root/.codex/users"
 CODEX_DEFAULT_MODEL = os.environ.get("CODEX_DEFAULT_MODEL", "gpt-5.5")
+CODEX_LOCAL_SKILLS = os.environ.get("CC_CODEX_LOCAL_SKILLS", "false").lower() in {
+    "1", "true", "yes", "on",
+}
 CODEX_ALLOW_DANGER_FULL_ACCESS = (
     os.environ.get("CC_CODEX_ALLOW_DANGER_FULL_ACCESS", "false").lower()
     in {"1", "true", "yes", "on"}
@@ -520,6 +523,18 @@ def _run_codex(cli_model, prompt, system_prompt=None, cwd=None, timeout=None, ad
     except ValueError as exc:
         return False, "", str(exc)
 
+    if CODEX_LOCAL_SKILLS:
+        skills_dir = Path(env["CODEX_HOME"]) / "skills"
+        skill_paths = sorted(skills_dir.glob("*/SKILL.md"))
+        if skill_paths:
+            catalog = "\n".join(f"- {path.parent.name}: {path}" for path in skill_paths)
+            prompt = (
+                "Available local skills follow. When a skill is requested or relevant, "
+                "read its SKILL.md and follow its instructions. Resolve referenced files "
+                "relative to that skill directory.\n"
+                f"{catalog}\n\n{prompt}"
+            )
+
     tmp_path = None
     try:
         tmp = tempfile.NamedTemporaryFile(prefix="codex-last-", suffix=".txt", delete=False)
@@ -538,7 +553,7 @@ def _run_codex(cli_model, prompt, system_prompt=None, cwd=None, timeout=None, ad
             "-m", cli_model,
             "--color", "never",
         ]
-        if sandbox == "danger-full-access":
+        if CODEX_LOCAL_SKILLS or sandbox == "danger-full-access":
             cmd.append("--dangerously-bypass-approvals-and-sandbox")
         else:
             cmd += ["--sandbox", sandbox]
